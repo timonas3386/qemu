@@ -9,11 +9,13 @@
 #include <stdio.h>
 #include <glib.h>
 
+#include <unistd.h>
+
 #include <qemu-plugin.h>
 
 #define STRTOLL(x) g_ascii_strtoll(x, NULL, 10)
 
-QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+QEMU_PLUGIN_EXPORT int qemu_plugin_version = 1;
 
 static enum qemu_plugin_mem_rw rw = QEMU_PLUGIN_MEM_RW;
 
@@ -24,6 +26,8 @@ static GRand *rng;
 
 static int limit;
 static bool sys;
+
+static int l1_dblksize, l1_iblksize;
 
 enum EvictionPolicy {
     LRU,
@@ -112,6 +116,8 @@ static uint64_t l1_dmisses;
 
 static uint64_t l2_mem_accesses;
 static uint64_t l2_misses;
+
+static FILE *f;
 
 static int pow_of_two(int num)
 {
@@ -408,6 +414,13 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         insn = userdata;
         __atomic_fetch_add(&insn->l1_dmisses, 1, __ATOMIC_SEQ_CST);
         l1_dcaches[cache_idx]->misses++;
+        if (qemu_plugin_mem_is_store(info)){
+            if (access("/home/timo/Project/VM/data/mem_miss.csv", F_OK) == -1) {
+                f = fopen("/home/timo/Project/VM/data/mem_miss.csv", "a+");
+            }
+            fwrite(&vaddr, sizeof(vaddr), 1, f);
+            // fwrite(&vaddr, sizeof(vaddr), 1, f1);
+        }
     }
     l1_dcaches[cache_idx]->accesses++;
     g_mutex_unlock(&l1_dcache_locks[cache_idx]);
@@ -500,8 +513,8 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
                                          QEMU_PLUGIN_CB_NO_REGS,
                                          rw, data);
 
-        qemu_plugin_register_vcpu_insn_exec_cb(insn, vcpu_insn_exec,
-                                               QEMU_PLUGIN_CB_NO_REGS, data);
+        // qemu_plugin_register_vcpu_insn_exec_cb(insn, vcpu_insn_exec,
+        //                                        QEMU_PLUGIN_CB_NO_REGS, data);
     }
 }
 
@@ -702,8 +715,11 @@ finish:
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
 {
-    log_stats();
-    log_top_insns();
+    // log_stats();
+    // log_top_insns();
+
+    fflush(f);
+    fclose(f);
 
     caches_free(l1_dcaches);
     caches_free(l1_icaches);
@@ -746,8 +762,8 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
                         int argc, char **argv)
 {
     int i;
-    int l1_iassoc, l1_iblksize, l1_icachesize;
-    int l1_dassoc, l1_dblksize, l1_dcachesize;
+    int l1_iassoc, l1_icachesize;
+    int l1_dassoc, l1_dcachesize;
     int l2_assoc, l2_blksize, l2_cachesize;
 
     limit = 32;
@@ -821,6 +837,10 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
     }
 
     policy_init();
+
+    if (NULL == (f = fopen("/home/timo/Project/VM/data/mem_miss.csv", "a+"))) {
+        usleep(10);
+    }
 
     l1_dcaches = caches_init(l1_dblksize, l1_dassoc, l1_dcachesize);
     if (!l1_dcaches) {
